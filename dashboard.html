@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#0A0E16">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Panta Rey · BTC-Cockpit</title>
+<title>Panta Rey · BTC-Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -187,6 +187,8 @@
   .field{margin-bottom:14px}
   .field label{display:block;font-size:12.5px;color:var(--ink);margin-bottom:5px;font-weight:500}
   .field label small{color:var(--mut);font-weight:400}
+  .chk{display:flex;align-items:center;gap:10px;margin:2px 0 8px;min-height:44px;font-size:12.5px;font-weight:500;color:var(--ink);cursor:pointer}
+  .chk input{width:20px;height:20px;flex:none;accent-color:var(--teal)}
   .field input,.field select{
     width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;
     color:var(--ink);padding:11px 12px;font-size:15px;font-family:var(--disp);
@@ -324,6 +326,7 @@
     <div id="lastref">noch nicht aktualisiert</div>
     <div class="srcs" id="srcline">Binance · alternative.me · Deribit · Coinbase · CoinGecko</div>
     <div style="margin-top:8px;color:#3a4452">Muster &amp; Schwellen aus wenigen Zyklen — Orientierung, keine Prognose.</div>
+    <div style="margin-top:8px"><a href="https://panta-rey.github.io/BTC/" style="color:var(--mut)">Zur BTC-Ampel ↗</a></div>
   </footer>
 </div>
 
@@ -350,6 +353,8 @@
   <div class="field"><label>STH Realized Price <small>(USD · CheckOnChain)</small></label><input id="s_sth" type="number" inputmode="decimal" placeholder="z.B. 72738"></div>
   <div class="field"><label>ETF-Netto-Flow heute <small>(Mio USD · Farside / SoSoValue)</small></label><input id="s_etf" type="number" inputmode="decimal" placeholder="z.B. -129"></div>
 
+  <label class="chk"><input id="s_ampel" type="checkbox"><span>Realized Price und STH aus der BTC-Ampel lesen</span></label>
+  <div class="shint">Die Ampel rechnet den Realized Price jede Woche selbst und führt den STH-Einstand als Monatslesung. Mit Haken entfällt hier die Handeingabe der beiden Werte. Sie bleiben als Rückfall stehen: Ist die Ampel nicht erreichbar oder ihr Stand zu alt, gelten wieder die Werte von oben.</div>
   <div class="shint">Realized-Anker älter als 30 Tage fallen automatisch aus dem Strom-Score (bleiben grau mit „alt"-Markierung sichtbar), damit ein vergessener Wert die Zahl nicht verfälscht.</div>
 
   <div class="field"><label>Letzter Wendepunkt <small>(Datum)</small></label><input id="s_turn" type="date"></div>
@@ -384,7 +389,15 @@ const store={
   get(k,d){try{const v=localStorage.getItem(k);return v==null?d:JSON.parse(v);}catch(e){return d;}},
   set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
 };
-const CFG=Object.assign({realized:null,realizedTs:null,sth:null,sthTs:null,etf:null,etfTs:null,turn:null,turntype:"Top",workerUrl:null,snapSecret:null},store.get("pr_cfg",{}));
+const CFG=Object.assign({realized:null,realizedTs:null,sth:null,sthTs:null,etf:null,etfTs:null,turn:null,turntype:"Top",workerUrl:null,snapSecret:null,ampelSrc:false},store.get("pr_cfg",{}));
+/* BTC-Ampel als Quelle für die zwei Anker (optional, Haken im Zahnrad, Vorgabe aus).
+   Die Ampel rechnet den Realized Price jede Woche selbst aus Coin-Metrics-Daten und führt den
+   STH-Einstand als Monatslesung. Beide Seiten liegen auf derselben Herkunft (panta-rey.github.io).
+   Fällt die Ampel aus oder ist ihr Stand zu alt, gelten wieder die Handwerte aus dem Zahnrad.
+   Es kommt keine Kennzahl dazu: Nur die Eingabe zweier bestehender Anker wird automatisch. */
+const AMPEL_URL="https://panta-rey.github.io/BTC/data/latest.json";
+const AMPEL_RP_MAX_AGE_DAYS=14;   // Realized Price der Ampel ist ein Wochenwert
+const dayAge=d=>{const t=d?Date.parse(d+"T00:00:00Z"):NaN;return isNaN(t)?null:Math.max(0,Math.floor((Date.now()-t)/864e5));};
 const ETF_MAX_AGE_DAYS=2; // Flow-Daten altern in Tagen, nicht Monaten (Council 2.7.)
 const ANCHOR_MAX_AGE_DAYS=30;
 function anchorAgeDays(ts){return ts==null?null:Math.floor((Date.now()-ts)/864e5);}
@@ -419,7 +432,10 @@ const API={
   async fng(){const d=await jget("https://api.alternative.me/fng/?limit=2&format=json");return{value:+d.data[0].value,cls:d.data[0].value_classification};},
   async dvol(){const now=Date.now();const d=await jget(`https://www.deribit.com/api/v2/public/get_volatility_index_data?currency=BTC&start_timestamp=${now-365*864e5}&end_timestamp=${now}&resolution=86400`);const rows=d.result.data;return{cur:rows[rows.length-1][4],hist:rows.map(r=>r[4])};},
   async coinbase(){const d=await jget("https://api.coinbase.com/v2/prices/BTC-USD/spot");return parseFloat(d.data.amount);},
-  async dominance(){const d=await jget("https://api.coingecko.com/api/v3/global");return d.data.market_cap_percentage.btc;}
+  async dominance(){const d=await jget("https://api.coingecko.com/api/v3/global");return d.data.market_cap_percentage.btc;},
+  async ampel(){const d=await jget(AMPEL_URL);const rp=d&&d.indicators&&d.indicators.realized_price,s=d&&d.filters&&d.filters.sth_rp;
+    const ok=o=>o&&!o.missing&&+o.value>0&&o.as_of;
+    return{week:d.week_id||null,rp:ok(rp)?{v:+rp.value,asOf:rp.as_of}:null,sth:ok(s)?{v:+s.value,asOf:s.as_of}:null};}
 };
 
 /* ================================================================
@@ -647,10 +663,17 @@ function sCB(p){let sc,st;const a=Math.abs(p);
   return{sc,st};}
 function sDraw(d){let sc;if(d<-75)sc=10;else if(d<-60)sc=20;else if(d<-40)sc=32;else if(d<-20)sc=50;else if(d<-10)sc=62;else sc=75;return{sc,st:d<-40?"g":d<-20?"a":"r"};}
 function sReal(p){let sc;if(p<-10)sc=12;else if(p<0)sc=28;else if(p<50)sc=50;else if(p<120)sc=72;else sc=90;return{sc,st:p<0?"g":p<50?"a":"r"};}
-// Effektiver Realized Price: aktuell manuell; effRP kapselt das, falls je eine Gratis-Auto-Quelle dazukommt
+// Effektiver Realized Price: aus der BTC-Ampel, wenn im Zahnrad gewählt und frisch, sonst der Handwert.
 function effRP(m){
-  if(m&&m.realizedAuto&&m.realizedAuto.v)return{v:m.realizedAuto.v,auto:true,age:0,stale:false};
+  if(CFG.ampelSrc&&m&&m.realizedAuto&&m.realizedAuto.v)return{v:m.realizedAuto.v,auto:true,age:dayAge(m.realizedAuto.asOf)??0,stale:false};
   if(CFG.realized){const age=anchorAgeDays(CFG.realizedTs);const stale=age!=null&&age>ANCHOR_MAX_AGE_DAYS;return{v:CFG.realized,auto:false,age,stale};}
+  return null;
+}
+
+// Effektiver STH-Einstand: gleiche Regel. Nur Anker-Anzeige, nie im Strom-Score.
+function effSTH(m){
+  if(CFG.ampelSrc&&m&&m.sthAuto&&m.sthAuto.v)return{v:m.sthAuto.v,auto:true,age:dayAge(m.sthAuto.asOf)??0};
+  if(CFG.sth)return{v:CFG.sth,auto:false,age:anchorAgeDays(CFG.sthTs)};
   return null;
 }
 
@@ -662,9 +685,9 @@ let HIST=null;                       // geladene Verlaufs-Historie (für Journal
 /* ---------------- Build market object ---------------- */
 async function loadMarket(){
   const errs=[];
-  const R=await Promise.allSettled([API.klines("1d",500),API.klines("4h",180),API.ticker(),API.funding(),API.fng(),API.dvol(),API.coinbase(),API.dominance(),API.klines("1w",260),API.goldKlines()]);
-  const [k1d,k4h,tk,fund,fng,dvol,cbPrice,dom,k1w,paxg]=R.map(x=>x.status==="fulfilled"?x.value:null);
-  const names=["Binance 1d","Binance 4h","Binance Ticker","Funding","Fear&Greed","DVOL","Coinbase","Dominanz","Binance 1w","Gold (PAXG)"];
+  const R=await Promise.allSettled([API.klines("1d",500),API.klines("4h",180),API.ticker(),API.funding(),API.fng(),API.dvol(),API.coinbase(),API.dominance(),API.klines("1w",260),API.goldKlines(),CFG.ampelSrc?API.ampel():Promise.resolve(null)]);
+  const [k1d,k4h,tk,fund,fng,dvol,cbPrice,dom,k1w,paxg,amp]=R.map(x=>x.status==="fulfilled"?x.value:null);
+  const names=["Binance 1d","Binance 4h","Binance Ticker","Funding","Fear&Greed","DVOL","Coinbase","Dominanz","Binance 1w","Gold (PAXG)","BTC-Ampel"];
   R.forEach((x,i)=>{if(x.status==="rejected")errs.push(names[i]);});
 
   const prev=MK||{};
@@ -681,11 +704,16 @@ async function loadMarket(){
   if(k1d&&k1d.length>200){
     const closes=k1d.map(k=>k.c);
     const s200=sma(closes,200);const mayer=price/ s200[s200.length-1];
-    const ath=Math.max(...k1d.map(k=>k.h));const draw=(price-ath)/ath*100;
+    // Hoch über Tages- UND Wochenkerzen. Das 500-Tage-Fenster allein verliert das Allzeithoch:
+    // Der 6.10.2025 fällt am 18.2.2027 heraus, danach schrumpfte der Rückgang, ohne dass sich
+    // der Kurs bewegt. Die Wochenkerzen reichen fünf Jahre zurück; fällt ihr Abruf einmal aus,
+    // hält das zuletzt gespeicherte Hoch (ein Hoch wird nie kleiner).
+    const prevAth=(prev.ind&&prev.ind.drawdown&&prev.ind.drawdown.ath)||0;
+    const ath=Math.max(prevAth,...k1d.map(k=>k.h),...(k1w?k1w.map(k=>k.h):[]));const draw=(price-ath)/ath*100;
     const er1=er(closes,20);
     const rsi=rsiWilder(closes,14);const rsiNow=rsi[rsi.length-1];
     m.ind.mayer={v:mayer};
-    m.ind.drawdown={v:draw};
+    m.ind.drawdown={v:draw,ath};
     m.ind.er={v:er1};
     m.ind.rsi={v:rsiNow};
     // trend alignment: price vs sma50/100/200 (1d) + sma50/200-equiv on 4h
@@ -701,6 +729,15 @@ async function loadMarket(){
   if(dvol)m.ind.dvol={v:dvol.cur,pct:pctRank(dvol.hist,dvol.cur)};
   if(dom!=null)m.ind.dom={v:dom};
   if(cbPrice&&price){m.ind.cbprem={v:(cbPrice-price)/price*100};}
+
+  // ANKER AUS DER BTC-AMPEL (optional). Bei einem Ausfall gilt der letzte geladene Stand weiter,
+  // das Alter entscheidet: zu alte Werte werden nicht verwendet, dann greifen die Handwerte.
+  if(CFG.ampelSrc){
+    const a=amp||prev.ampel||null;
+    if(a){m.ampel=a;
+      if(a.rp&&dayAge(a.rp.asOf)!=null&&dayAge(a.rp.asOf)<=AMPEL_RP_MAX_AGE_DAYS)m.realizedAuto={v:a.rp.v,asOf:a.rp.asOf};
+      if(a.sth&&dayAge(a.sth.asOf)!=null&&dayAge(a.sth.asOf)<=ANCHOR_MAX_AGE_DAYS)m.sthAuto={v:a.sth.v,asOf:a.sth.asOf};}
+  }
 
   // MARKT-PHASE (50W/200W SMA, drei Zonen) — ersetzt den manuellen 200W-Anker
   if(k1w&&k1w.length>=51&&price){
@@ -822,8 +859,8 @@ const EB={
   fng:{t:"Fear & Greed",u:"",what:"Misst die Marktstimmung von 0 (Panik) bis 100 (Euphorie) aus Volatilität, Momentum und Social Media.",hist:"Konträr-Indikator: wenn alle Angst haben, war historisch der beste Zeitpunkt zu kaufen. Werte unter 15 traten nur an Zyklus-Böden auf."},
   funding:{t:"Funding-Rate (Ø 30 Tage)",u:"%",what:"Was gehebelte Long-Trader alle 8 Stunden an Short-Trader zahlen. Zeigt, wie die Futures-Spekulanten positioniert sind.",hist:"Stark positiv = zu viele Longs, oft Konträr-bearish. Negativ = Shorts dominieren und werden bezahlt, Konträr-bullisch."},
   cbprem:{t:"Coinbase-Premium",u:"%",what:"Preisdifferenz zwischen Coinbase (US-Institutionen) und Binance (global). Selbst berechnet aus zwei Preis-Feeds, die nicht exakt zeitgleich abgefragt werden.",hist:"Positiv = US-Nachfrage zahlt einen Aufpreis. Negativ = Abgabedruck aus den USA. Wichtig zur Ehrlichkeit: zwei unsynchrone Feeds erzeugen bei BTC schon ±0.05 % Mikrostruktur-Rauschen. Werte in diesem Band werden daher bewusst neutral gewertet — nur ein klarer Aufpreis/Discount (≥0.15 %) zählt als echtes Signal. Proxy, kein offizieller Coinglass-Index."},
-  drawdown:{t:"Drawdown vom Hoch",u:"%",what:"Wie weit BTC unter seinem höchsten Stand im Datenfenster liegt.",hist:"Historische Bärenmärkte fielen −77 / −86 / −90 %. Je tiefer der Rückgang, desto näher an historischen Wertzonen — aber tiefer geht immer."},
-  realized:{t:"Abstand zum Realized Price",u:"%",what:"Wie weit der Marktpreis über/unter dem durchschnittlichen Einstandspreis aller Coins liegt (On-Chain). Manuell gepflegt, weil es dafür aktuell keine kostenlose Live-Quelle gibt — ~monatlich aus Into the Cryptoverse / CheckOnChain eintragen.",hist:"Unter dem Realized Price (negativ) = der Durchschnitts-Halter ist im Verlust, historisch Kapitulations- und Akkumulationszone."},
+  drawdown:{t:"Drawdown vom Hoch",u:"%",what:"Wie weit BTC unter seinem höchsten Stand der letzten fünf Jahre liegt (Tages- und Wochenkerzen) — in der Regel das Allzeithoch.",hist:"Historische Bärenmärkte fielen −77 / −86 / −90 %. Je tiefer der Rückgang, desto näher an historischen Wertzonen — aber tiefer geht immer."},
+  realized:{t:"Abstand zum Realized Price",u:"%",what:"Wie weit der Marktpreis über/unter dem durchschnittlichen Einstandspreis aller Coins liegt (On-Chain). Von Hand gepflegt (~monatlich aus Into the Cryptoverse / CheckOnChain) oder, mit dem Haken im Zahnrad, wöchentlich aus der BTC-Ampel gelesen. Die Kachel nennt die Quelle.",hist:"Unter dem Realized Price (negativ) = der Durchschnitts-Halter ist im Verlust, historisch Kapitulations- und Akkumulationszone."},
   er:{t:"Trend / Range (ER)",u:"",what:"Efficiency Ratio: misst, ob sich BTC gerichtet bewegt (Trend) oder seitwärts pendelt (Range).",hist:"Unter 0.3 = saubere Seitwärtsbewegung. Über 0.5 = klarer Trend. In der Akkumulationszone heisst Trend: lieber gestaffelt Spot kaufen als auf Range-Pendeln setzen."},
   dvol:{t:"Volatilität (DVOL)",u:"",what:"Deribits „Bitcoin-VIX\" — die vom Optionsmarkt erwartete Schwankung der nächsten 30 Tage.",hist:"Niedrig = ruhiger Markt, oft das „langweilige Tief\", aus dem Trends starten. Hoch = Stress: passiert an Kapitulationen UND an Euphorie-Tops."},
   align:{t:"Trend-Alignment",u:"",what:"Über wie viele Zeitebenen der Preis über seinen gleitenden Durchschnitten liegt (1D 50/100/200, 4H 50/200).",hist:"Mehr Ebenen bullisch = breit getragener Aufwärtstrend. Wenige = der Markt hat sich noch nicht für eine Richtung entschieden."},
@@ -831,7 +868,7 @@ const EB={
   rsi:{t:"RSI (14)",u:"",what:"Relative Strength Index — ob die jüngsten Bewegungen eher auf- oder abwärts gingen.",hist:"Unter 30 = überverkauft, über 70 = überkauft. Allein kein Signal — bewusst nicht im Strom-Score, nur als Kontext."},
   bewertung:{t:"Bewertung (Sub-Linse)",u:"",what:"Fasst zusammen, ob BTC günstig oder teuer ist — relativ zu seinem eigenen historischen Massstab. Gebaut aus Mayer Multiple, Drawdown und (falls gepflegt) dem Abstand zum Realized Price.",hist:"Die langsame, strukturelle Seite. Tiefe Werte = historisch günstige Akkumulationszonen, hohe = teuer/spätzyklisch. Zusammen mit der Positionierung bildet sie den Strom-Score — je zur Hälfte."},
   positionierung:{t:"Positionierung (Sub-Linse)",u:"",what:"Fasst zusammen, wie die Marktteilnehmer aufgestellt sind — ängstlich/unterinvestiert oder gierig/übergehebelt. Aus Fear & Greed, Funding-Rate und Coinbase-Premium.",hist:"Die schnelle, sentiment-getriebene Seite. Tief = Angst und wenig Hebel (konträr-bullisch), hoch = Gier und viel Hebel (Vorsicht)."},
-  anker:{t:"Zyklus-Anker",u:"",what:"Zwei On-Chain-Bewertungslinien, die du manuell pflegst: Realized Price (Durchschnitts-Einstand aller Coins) und STH Realized Price (Kostenbasis der jungen Coins).",hist:"Liegt der Preis unter einer Linie, ist der jeweilige Halter-Typ im Schnitt im Verlust — historisch Kapitulations- und Akkumulationszonen. Es gibt keine kostenlose Live-API dafür, darum trägst du sie ~monatlich von Hand ein (Into the Cryptoverse / CheckOnChain). Der 200-Wochen-Schnitt ist jetzt automatisch in der Markt-Phase."},
+  anker:{t:"Zyklus-Anker",u:"",what:"Zwei On-Chain-Bewertungslinien: Realized Price (Durchschnitts-Einstand aller Coins) und STH Realized Price (Kostenbasis der jungen Coins). Du pflegst sie von Hand oder lässt sie mit dem Haken im Zahnrad aus der BTC-Ampel lesen.",hist:"Liegt der Preis unter einer Linie, ist der jeweilige Halter-Typ im Schnitt im Verlust — historisch Kapitulations- und Akkumulationszonen. Im Browser gibt es keine kostenlose Live-API dafür. Ohne Haken trägst du sie ~monatlich von Hand ein (Into the Cryptoverse / CheckOnChain); mit Haken kommt der Realized Price wöchentlich aus der Ampel, der STH-Einstand aus deiner Monatslesung dort. Der 200-Wochen-Schnitt ist jetzt automatisch in der Markt-Phase."},
   phase:{t:"Markt-Phase (50W / 200W)",u:"",what:"Zwei wöchentliche Durchschnitte teilen den Markt in drei Zonen: über dem 50-Wochen-Schnitt (Bull-Linie) = Bulle; darunter, aber über dem 200-Wochen-Schnitt (Cheap-Linie) = Bär; unter dem 200-Wochen-Schnitt = Akkumulation, billig.",hist:"Mechanische Regel, keine Prognose. Über die letzten Zyklen war „unter dem 200W-Schnitt“ verlässlich eine günstige Akkumulationszone und „über dem 50W-Schnitt“ die Bestätigung eines neuen Bullenmarkts; dazwischen liegt die zähe Bär-/No-Trade-Phase. Bewusst NICHT im Strom-Score — misst fast dasselbe wie Mayer, würde also doppelt zählen."},
   dxy:{t:"US-Dollar (breit)",u:"",what:"Stärke des US-Dollars, gemessen am breiten handelsgewichteten Index DTWEXBGS (via FRED). Achtung: das ist NICHT der bekannte ICE-DXY (~98–100), sondern ein breiterer Korb mit anderem Bezugswert (~119) — beide Werte also nicht direkt vergleichen, nur die Richtung zählt.",hist:"BTC bewegt sich meist invers zum Dollar: starker Dollar = Gegenwind, schwacher Dollar = Rückenwind. Gilt für Gold gleichsinnig — beide sind Dollar-Alternativen. Wir nutzen den breiten Index, weil es keine kostenlose Live-Quelle für den echten DXY gibt. Reiner Kontext, fliesst nicht in den Strom-Score."},
   us10y:{t:"US 10-Jahres-Rendite",u:"%",what:"Die Rendite 10-jähriger US-Staatsanleihen — der wichtigste Zins für Risk-Assets.",hist:"Steigende Renditen = strengeres Umfeld, Gegenwind für Risk-Assets wie BTC. Fallende = lockereres Umfeld, Rückenwind."},
@@ -840,7 +877,7 @@ const EB={
   gold:{t:"Goldpreis",u:"USD",what:"Goldpreis je Feinunze, gemessen über PAXG (Pax Gold, 1 Token = 1 Feinunze physisches Gold) auf Binance — direkt vom Client geholt, wie alle Crypto-Daten. Die frühere FRED-Serie wurde eingestellt, Stooq blockt Cloud-IPs; PAXG ist die verlässlichste Gratis-Quelle. Auf der BTC-Seite reiner Kontext („digitales Gold\"), die volle Gold-Analyse hat einen eigenen Tab.",hist:"PAXG handelt typischerweise ~0.2–1% über dem Spot-Fixing — für Verhältniszahlen (Trendabstand, Hoch-Abstand) kürzt sich ein konstanter Aufschlag raus, nur der absolute Preis ist minimal höher als LBMA. Steigendes Gold zeigt Store-of-Value-Nachfrage — Umfeld, in dem BTC oft mitläuft. Chip-Totzone: ±1% über 30 Tage gilt als seitwärts."},
   gold200:{t:"Gold ÷ 200-Tage-Schnitt",u:"",what:"Goldpreis geteilt durch seinen 200-Tage-Durchschnitt — dasselbe Konzept wie das Mayer Multiple bei BTC, nur für Gold. 1.00 = genau am Trend, client-seitig aus 500 PAXG-Tageskerzen berechnet (Gold-Token handelt 24/7, also inkl. Wochenenden). Gewicht 0.6 im Gold-Strom.",hist:"Gold pendelt deutlich enger um seinen Trend als BTC: historisch meist zwischen ~0.9 und ~1.15. Deutlich höhere Werte traten in Übertreibungsphasen auf (1980, 2011). Die Schwellen sind Faustregeln, statistisch nicht belastbar — auf zwei bis drei grossen Gold-Regimes seit 1971 lässt sich nichts kalibrieren."},
   golddd:{t:"Abstand vom 1J-Hoch",u:"%",what:"Wie weit der Goldpreis unter dem höchsten Stand der letzten exakt 365 Tage liegt (0% = am Hoch; PAXG handelt 24/7, darum sind 365 Kerzen genau ein Jahr). Gewicht 0.4 im Gold-Strom — das Pendant zum Drawdown-Scorer bei BTC.",hist:"Gold korrigiert flacher als BTC: normale Rücksetzer 3–10%, grosse Korrekturen 15–25% (2013: −28% in einem Jahr). Nahe am Hoch = teuer relativ zum eigenen Jahr, tiefer Abstand = historisch eher Einstiegszonen. Faustregel: In strukturellen Bullenmärkten notiert Gold notorisch oft am Hoch — der Wert allein ist kein Verkaufssignal."},
-  goldmacro:{t:"Umfeld für Gold",u:"",what:"Fasst die drei wichtigsten Gold-Treiber zu einem Rücken-/Gegenwind-Balken zusammen: US-Realzins (Richtung, invers), Dollar (Richtung, invers) und M2-Liquidität. Gleiche Mechanik wie das BTC-Makro-Umfeld, mit denselben Totzonen.",hist:"Fliesst bewusst NICHT in den Gold-Strom — Treiber-Richtung und Bewertung sind zwei verschiedene Fragen, genau wie beim BTC-Cockpit. Der Balken beantwortet „hilft oder bremst das Umfeld gerade?“, die Bewertungs-Achse „ist Gold relativ zu sich selbst teuer?“."},
+  goldmacro:{t:"Umfeld für Gold",u:"",what:"Fasst die drei wichtigsten Gold-Treiber zu einem Rücken-/Gegenwind-Balken zusammen: US-Realzins (Richtung, invers), Dollar (Richtung, invers) und M2-Liquidität. Gleiche Mechanik wie das BTC-Makro-Umfeld, mit denselben Totzonen.",hist:"Fliesst bewusst NICHT in den Gold-Strom — Treiber-Richtung und Bewertung sind zwei verschiedene Fragen, genau wie beim BTC-Dashboard. Der Balken beantwortet „hilft oder bremst das Umfeld gerade?“, die Bewertungs-Achse „ist Gold relativ zu sich selbst teuer?“."},
   tips:{t:"US-Realzins 10J (TIPS)",u:"%",what:"Rendite 10-jähriger inflationsgeschützter US-Staatsanleihen (FRED DFII10) — der Zins nach Abzug der Inflationserwartung.",hist:"Der historisch stabilste Gold-Treiber: Gold zahlt keinen Zins und konkurriert darum mit dem Realzins. Fallender Realzins = Rückenwind für Gold, steigender = Gegenwind. Die inverse Beziehung war 2004–2021 bemerkenswert eng, seit 2022 lockerer (u.a. Zentralbankkäufe) — Richtung zählt, nicht Präzision. Chip-Totzone: ±0.10 pp über 30 Tage. Kontext für Gold, fliesst nicht in den Makro-Score für BTC."},
   m2:{t:"Geldmenge M2",u:"",what:"Die breite US-Geldmenge (FRED M2SL) — ein Mass für die Liquidität im System.",hist:"Wachsende Liquidität war langfristig der stärkste Rückenwind für BTC — und stützt Gold auf dieselbe Weise. Schrumpfende Geldmenge = Gegenwind. Monatlich aktualisiert, träge."},
   macro:{t:"Makro-Umfeld",u:"",what:"Fasst Dollar, Zinsen, S&P-Trend und Liquidität zu einem Gegenwind/Rückenwind-Score zusammen.",hist:"Bewusst NICHT im Strom-Score — das BTC-Makro-Verhältnis ist zu instabil, um es in eine Bull/Bear-Zahl zu mitteln. Es steuert stattdessen den Klartext und später die Szenarien."},
@@ -920,8 +957,8 @@ function render(){
   if(I.fng)h1+=card("fng","Fear &amp; Greed",I.fng.cls||"",I.fng.v,"",C.fng?C.fng.st:"n",I.fng.stale);
   if(I.funding)h1+=card("funding","Funding Ø 30T","pro 8 Stunden",I.funding.v.toFixed(4)+"%","",C.funding?C.funding.st:"n",I.funding.stale);
   if(I.cbprem)h1+=card("cbprem","Coinbase-Premium","US-Nachfrage-Proxy",(I.cbprem.v>=0?"+":"")+I.cbprem.v.toFixed(3)+"%","",C.cbprem?C.cbprem.st:"n",I.cbprem.stale);
-  if(I.drawdown)h1+=card("drawdown","Drawdown vom Hoch","",I.drawdown.v.toFixed(1)+"%","",C.drawdown?C.drawdown.st:"n",I.drawdown.stale);
-  if(C.realized)h1+=card("realized","Abstand Realized",C.realized.stale?`manuell · ${C.realized.age} T alt · nicht im Score`:(C.realized.auto?"auto":"manuell"),(C.realized.dist>=0?"+":"")+C.realized.dist.toFixed(1)+"%","",C.realized.stale?"n":C.realized.st,C.realized.stale);
+  if(I.drawdown)h1+=card("drawdown","Drawdown vom Hoch",I.drawdown.ath?"Hoch $"+fmtUSD(I.drawdown.ath):"",I.drawdown.v.toFixed(1)+"%","",C.drawdown?C.drawdown.st:"n",I.drawdown.stale);
+  if(C.realized)h1+=card("realized","Abstand Realized",C.realized.stale?`manuell · ${C.realized.age} T alt · nicht im Score`:(C.realized.auto?"aus der BTC-Ampel":"manuell"),(C.realized.dist>=0?"+":"")+C.realized.dist.toFixed(1)+"%","",C.realized.stale?"n":C.realized.st,C.realized.stale);
   else h1+=`<div class="card"><span class="dot n"></span><div class="body"><div class="nm">Abstand Realized</div><div class="sub">Realized Price im Zahnrad eintragen</div></div><button class="qbtn" data-eb="realized">?</button></div>`;
   $("tier1").innerHTML=h1;
 
@@ -951,17 +988,17 @@ function render(){
 
   // anchors
   const anc=[];
-  const aRow=(lbl,src,val,price,age)=>{
+  const aRow=(lbl,src,val,price,age,auto)=>{
     if(!val){return `<div class="anchor"><div class="al">${lbl}<small>${src}</small></div><div class="ar" style="color:var(--mut);font-weight:500">eintragen</div></div>`;}
     const stale=age!=null&&age>ANCHOR_MAX_AGE_DAYS;
     const dist=(price-val)/val*100;const st=stale?"n":dist<0?"g":dist<25?"a":"r";
     const ageTxt=age!=null?`${age} T alt`:"";
     const badge=stale?'<span class="stalebadge">alt</span>':'';
     const distHtml=stale?`<span style="color:var(--mut)">${(dist>=0?"+":"")+dist.toFixed(1)}%</span>`:`${(dist>=0?"+":"")+dist.toFixed(1)}%`;
-    return `<div class="anchor"><div class="al">${lbl}${badge}<small>$${fmtUSD(val)}${ageTxt?" · "+ageTxt:""}</small></div><div class="ar"><span class="dot ${st}" style="box-shadow:none"></span>${distHtml}</div></div>`;
+    return `<div class="anchor"><div class="al">${lbl}${badge}<small>$${fmtUSD(val)}${auto?" · aus der Ampel":""}${ageTxt?" · "+ageTxt:""}</small></div><div class="ar"><span class="dot ${st}" style="box-shadow:none"></span>${distHtml}</div></div>`;
   };
-  {const rp=effRP(m);anc.push(aRow("Realized Price",rp&&rp.auto?"auto":"Cost-Basis aller Coins",rp?rp.v:null,m.price,rp?rp.age:null));}
-  anc.push(aRow("STH Realized","Kostenbasis junger Coins",CFG.sth,m.price,anchorAgeDays(CFG.sthTs)));
+  {const rp=effRP(m);anc.push(aRow("Realized Price","Cost-Basis aller Coins",rp?rp.v:null,m.price,rp?rp.age:null,rp&&rp.auto));}
+  {const sh=effSTH(m);anc.push(aRow("STH Realized","Kostenbasis junger Coins",sh?sh.v:null,m.price,sh?sh.age:null,sh&&sh.auto));}
   if(CFG.etf!=null&&CFG.etf!==""){
     const v=+CFG.etf;const eAge=anchorAgeDays(CFG.etfTs);const eStale=eAge!=null&&eAge>ETF_MAX_AGE_DAYS;
     const eBadge=eStale?'<span class="stalebadge">alt</span>':'';
@@ -1005,7 +1042,7 @@ function chipTips(chg){if(chg==null)return'<span class="regime rg-mut">–</span
 function renderMacro(){
   const w=$("macroWrap");if(!w)return;const I=MK?MK.ind:{};const C=LC;
   if(!CFG.workerUrl){
-    w.innerHTML='<div class="card" style="display:block"><div class="nm" style="margin-bottom:4px">Makro-Linse inaktiv</div><div class="sub" style="line-height:1.5">Worker-URL im Zahnrad eintragen, um Dollar, Zinsen, S&amp;P-Korrelation und Liquidität zu laden. Bis dahin läuft das Cockpit voll mit Crypto-Daten.</div></div>';
+    w.innerHTML='<div class="card" style="display:block"><div class="nm" style="margin-bottom:4px">Makro-Linse inaktiv</div><div class="sub" style="line-height:1.5">Worker-URL im Zahnrad eintragen, um Dollar, Zinsen, S&amp;P-Korrelation und Liquidität zu laden. Bis dahin läuft das Dashboard voll mit Crypto-Daten.</div></div>';
     return;
   }
   let h="";
@@ -1169,7 +1206,7 @@ async function loadJournal(H){
   if(!CFG.workerUrl){w.innerHTML='<div class="card" style="display:block"><div class="nm" style="margin-bottom:4px">Journal inaktiv</div><div class="sub" style="line-height:1.5">Das Journal braucht den Worker (Snapshot-Speicher). Worker-URL im Zahnrad eintragen, dann zeichnet es ab dem nächsten Öffnen täglich auf.</div></div>';return;}
   let snaps=[];
   try{snaps=await jget(CFG.workerUrl+"/history");}catch(e){w.innerHTML='<div class="card" style="display:block;color:var(--mut)">Journal-Daten konnten nicht geladen werden (Worker nicht erreichbar).</div>';return;}
-  if(!Array.isArray(snaps)||!snaps.length){w.innerHTML='<div class="card" style="display:block;color:var(--mut)">Noch keine Aufzeichnung vorhanden. Sobald du das Cockpit öffnest, wird täglich ein Snapshot gespeichert.</div>';return;}
+  if(!Array.isArray(snaps)||!snaps.length){w.innerHTML='<div class="card" style="display:block;color:var(--mut)">Noch keine Aufzeichnung vorhanden. Sobald du das Dashboard öffnest, wird täglich ein Snapshot gespeichert.</div>';return;}
   renderJournal(snaps,H);
 }
 
@@ -1183,7 +1220,7 @@ function renderJournal(snaps,H){
   /* Episoden-Bildung (Council 2.7.): aufeinanderfolgende Aufzeichnungstage mit
      gleicher Haltung sind EINE Beobachtung, nicht viele — dieselbe
      Autokorrelations-Korrektur wie in der Szenario-Engine. Lücken bis 3 Tage
-     (Cockpit nicht geöffnet) zählen als zusammenhängend. Gemessen wird ab dem
+     (Dashboard nicht geöffnet) zählen als zusammenhängend. Gemessen wird ab dem
      ersten Tag jeder Episode. */
   const asc=snaps.slice().sort((a,b)=>a.date<b.date?-1:1);
   const eps=[];let cur=null;
@@ -1305,7 +1342,9 @@ function ebNow(id){const m=MK;if(!m)return"—";const I=m.ind;
     case"phase":{if(!I.phase||!I.phase.zone)return"—";const p=I.phase;if(p.zone==="accum")return"Unter dem 200-Wochen-Schnitt ("+(p.d200!=null?p.d200.toFixed(0)+"%":"")+ ") — billig, historische Akkumulationszone.";if(p.zone==="bull")return"Über dem 50-Wochen-Schnitt — Bullenmarkt strukturell bestätigt, mehr Risiko erlaubt.";return"Zwischen Cheap-Linie und Bull-Linie — zähe Bär-/No-Trade-Phase. "+(p.d50!=null?Math.abs(p.d50).toFixed(0)+"% unter der Bull-Linie.":"");}
     case"bewertung":{if(!LC||LC.lens.val==null)return"Noch nicht berechnet.";const v=LC.lens.val;return v<40?"Aktuell günstig bewertet ("+Math.round(v)+"/100) — strukturell im Akkumulationsbereich.":v<60?"Aktuell neutral bewertet ("+Math.round(v)+"/100).":"Aktuell teuer bewertet ("+Math.round(v)+"/100) — spätzyklisch.";}
     case"positionierung":{if(!LC||LC.lens.pos==null)return"Noch nicht berechnet.";const v=LC.lens.pos;return v<40?"Markt aktuell ängstlich/unterinvestiert ("+Math.round(v)+"/100) — konträr-bullisch.":v<60?"Positionierung gemischt ("+Math.round(v)+"/100).":"Markt aktuell gierig/übergehebelt ("+Math.round(v)+"/100) — Vorsicht.";}
-    case"anker":{const rpAuto=MK&&MK.realizedAuto&&MK.realizedAuto.v;const need=[];if(!rpAuto)need.push(CFG.realized);need.push(CFG.sth);const set=need.filter(x=>x!=null&&x!=="").length;return "Aktuell "+set+" von "+need.length+(need.length===1?" Anker":" Ankern")+" gepflegt."+(rpAuto?" Realized kommt automatisch.":(set<need.length?" Fehlende im Zahnrad ergänzen.":" Aktuell."));}
+    case"anker":{const rp0=effRP(MK),sh0=effSTH(MK);const rpAuto=rp0&&rp0.auto,shAuto=sh0&&sh0.auto;const need=[];if(!rpAuto)need.push(CFG.realized);if(!shAuto)need.push(CFG.sth);
+      if(!need.length)return"Beide Anker kommen aus der BTC-Ampel (Stand "+fmtDate(MK.realizedAuto.asOf)+").";
+      const set=need.filter(x=>x!=null&&x!=="").length;return "Aktuell "+set+" von "+need.length+(need.length===1?" Anker":" Ankern")+" gepflegt."+(rpAuto?" Realized kommt aus der BTC-Ampel.":(set<need.length?" Fehlende im Zahnrad ergänzen.":" Aktuell."));}
     case"dxy":if(!I.dxy)return"—";return I.dxy.chg>0?"Dollar erstarkt — tendenziell Gegenwind für BTC.":"Dollar schwächelt — tendenziell Rückenwind.";
     case"sp500":{if(!I.sp500||I.sp500.trend==null)return"—";return I.sp500.trend>0?"S&P steigt über die letzten 30 Tage (+"+I.sp500.trend.toFixed(1)+"%) — stützt das Risiko-Umfeld.":"S&P fällt über die letzten 30 Tage ("+I.sp500.trend.toFixed(1)+"%) — Gegenwind fürs Risiko-Umfeld.";}
     case"us10y":if(!I.us10y)return"—";return I.us10y.chg>0?"Renditen steigen — strengeres Umfeld, Gegenwind.":"Renditen fallen — lockereres Umfeld, Rückenwind.";
@@ -1328,6 +1367,7 @@ function openSettings(){
   $("s_etf").value=CFG.etf??"";$("s_turn").value=CFG.turn??"";$("s_turntype").value=CFG.turntype||"Top";
   $("s_worker").value=CFG.workerUrl??"";
   $("s_secret").value=CFG.snapSecret??"";
+  $("s_ampel").checked=!!CFG.ampelSrc;
   const ls=store.get("pr_lastsnap",null);
   $("snapStatus").innerHTML=CFG.workerUrl?(ls?`Letzter erfolgreicher Snapshot: <b>${fmtDate(ls)}</b>${ls===dayKey(Date.now())?" (heute)":""}`:"Noch kein Snapshot gespeichert."):"";
   openSheet($("setSheet"));
@@ -1344,7 +1384,9 @@ $("saveBtn").addEventListener("click",()=>{
   CFG.turn=$("s_turn").value||null;CFG.turntype=$("s_turntype").value;
   CFG.workerUrl=($("s_worker").value||"").trim().replace(/\/$/,"")||null;
   CFG.snapSecret=($("s_secret").value||"").trim()||null;
+  const ampelWar=!!CFG.ampelSrc;CFG.ampelSrc=$("s_ampel").checked;
   store.set("pr_cfg",CFG);closeSheet();render();toast("Gespeichert");
+  if(CFG.ampelSrc&&!ampelWar)refresh();   // Haken neu gesetzt: Werte der Ampel gleich holen
 });
 
 /* ---------------- Backup: Export / Import ----------------
